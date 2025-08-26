@@ -2,7 +2,7 @@
 /**
  * Plugin Name: GCB Code Box (Thumbnail + Copy + Preview)
  * Description: Adds a shortcode to display a YouTube-ratio thumbnail with "Copy Code" and "Preview" buttons. Paste your Gutenberg code between the shortcode tags; set preview URL via attribute.
- * Version:     1.0.0
+ * Version:     1.0.1
  * Author:      Your Name
  * License:     GPL-2.0+
  */
@@ -10,6 +10,10 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 final class GCB_Code_Box_Plugin {
+
+	/** Ensure assets are injected only once per page load */
+	private static $assets_enqueued = false;
+
 	public function __construct() {
 		add_shortcode( 'gcb_code_box', [ $this, 'render_shortcode' ] );
 	}
@@ -29,7 +33,7 @@ final class GCB_Code_Box_Plugin {
 	public function render_shortcode( $atts, $content = null, $tag = '' ) {
 		$atts = shortcode_atts(
 			[
-				'preview' => '#', // <-- Replace via shortcode attribute later (or keep # to do nothing)
+				'preview' => '#',
 				'thumb'   => '',
 				'title'   => 'Code preview block',
 			],
@@ -37,7 +41,6 @@ final class GCB_Code_Box_Plugin {
 			$tag
 		);
 
-		// Provide a default 16:9 SVG placeholder if no thumbnail passed.
 		$default_svg = 'data:image/svg+xml;utf8,' . rawurlencode(
 			'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid slice">
 				<rect width="1280" height="720" fill="#111"/>
@@ -51,9 +54,8 @@ final class GCB_Code_Box_Plugin {
 		$preview_url = esc_url( $atts['preview'] );
 		$title       = sanitize_text_field( $atts['title'] );
 
-		// The code to be copied is the enclosed content. If empty, show demo code + clear instruction comment.
-		$code_raw = (string) $content;
-		$demo_code = <<<HTML
+		$code_raw   = (string) $content;
+		$demo_code  = <<<HTML
 <!-- DEMO GUTENBERG CODE (replace this by putting your real Gutenberg HTML between the shortcode tags) -->
 <!-- Example: A simple group with a heading -->
 <!-- wp:group -->
@@ -70,10 +72,8 @@ HTML;
 
 		$code_to_copy = trim( $code_raw ) !== '' ? $code_raw : $demo_code;
 
-		// Unique ID per instance for accessibility and JS targeting.
 		$instance_id = 'gcb-' . wp_generate_uuid4();
 
-		// Enqueue minimal CSS & JS only when shortcode is used.
 		$this->enqueue_assets();
 
 		ob_start();
@@ -107,18 +107,21 @@ HTML;
 	}
 
 	/**
-	 * Enqueue inline CSS & JS (registered cleanly with WP).
+	 * Enqueue inline CSS & JS (only once, regardless of how many shortcodes are on the page).
 	 */
 	private function enqueue_assets() {
+		if ( self::$assets_enqueued ) {
+			return;
+		}
+		self::$assets_enqueued = true;
+
 		// Styles.
 		$style_handle = 'gcb-code-box-inline-style';
-		if ( ! wp_style_is( $style_handle, 'registered' ) ) {
-			wp_register_style( $style_handle, false, [], '1.0.0' );
-		}
+		wp_register_style( $style_handle, false, [], '1.0.1' );
 		$css = <<<CSS
 .gcb-wrapper{max-width:880px;margin:1.5rem auto;padding:1rem;border:1px solid #e5e7eb;border-radius:14px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.05)}
 .gcb-thumb{position:relative;width:100%;border-radius:12px;overflow:hidden;background:#0b0b0b}
-.gcb-thumb-inner{position:relative;width:100%;padding-top:56.25%; /* 16:9 */}
+.gcb-thumb-inner{position:relative;width:100%;padding-top:56.25%}
 .gcb-thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
 .gcb-actions{display:flex;gap:.5rem;justify-content:flex-start;align-items:center;margin-top:.75rem;flex-wrap:wrap}
 .gcb-btn{appearance:none;cursor:pointer;border:1px solid #d1d5db;background:#111827;color:#fff;padding:.6rem .9rem;border-radius:.7rem;font-size:14px;line-height:1.1}
@@ -132,9 +135,7 @@ CSS;
 
 		// Scripts.
 		$script_handle = 'gcb-code-box-inline-script';
-		if ( ! wp_script_is( $script_handle, 'registered' ) ) {
-			wp_register_script( $script_handle, '', [], '1.0.0', true );
-		}
+		wp_register_script( $script_handle, '', [], '1.0.1', true );
 		$js = <<<JS
 (function(){
 	function copyFromTextarea(textarea){
@@ -142,7 +143,6 @@ CSS;
 		if (navigator.clipboard && window.isSecureContext) {
 			return navigator.clipboard.writeText(text);
 		}
-		// Fallback for older browsers / non-HTTPS
 		var tmp = document.createElement('textarea');
 		tmp.style.position = 'fixed';
 		tmp.style.opacity = '0';
@@ -161,24 +161,30 @@ CSS;
 	}
 
 	document.addEventListener('click', function(e){
-		var copyBtn = e.target.closest('.gcb-copy');
-		if (copyBtn){
-			var wrapper = copyBtn.closest('.gcb-wrapper');
-			if (!wrapper) return;
+		// Only react if the click happened inside a single GCB wrapper
+		var wrapper = e.target.closest('.gcb-wrapper');
+		if (!wrapper) return;
+
+		// Copy button inside this wrapper
+		if (e.target.closest('.gcb-copy')){
 			var ta = wrapper.querySelector('.gcb-code');
 			if (!ta) return;
 			copyFromTextarea(ta).then(function(){
 				setFeedback(wrapper,'Code copied to clipboard.');
 				setTimeout(function(){ setFeedback(wrapper,''); }, 2500);
 			});
+			return;
 		}
 
+		// Preview button inside this wrapper
 		var prevBtn = e.target.closest('.gcb-preview');
 		if (prevBtn){
 			var url = prevBtn.getAttribute('data-url') || '#';
 			if (url && url !== '#'){
-				window.location.href = url; // navigate to your preview URL
+				var w = window.open(url, "_blank");
+				if (w) { w.opener = null; } // security: prevent access to window.opener
 			}
+			return;
 		}
 	}, false);
 })();
